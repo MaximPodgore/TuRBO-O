@@ -13,11 +13,8 @@ refer to other txt file
 ----------------
 Need to do:
 
-figure out a way to match data to a TR:
-make a class, and then in TurboO make an array of the TR classes
-
-Make a run counter for TR
-Make a fX_i.min() counter for TR 
+Make the program use the new TR class integrations
+Finish UCB part
 
 --------------
 UCB formula:
@@ -27,7 +24,7 @@ currently there is no time element to succ/fail, only net
 Use succ/failcout to do improvement calculations
 Prioritize TR length in calculations, scale by log2
 
-v(TR_i) = -y_{i}^* + alpha * (TBD) + expl_weight * sqrt(TR runs/ # evals)
+v(TR_i) = -y_{i}^* + expl_weight * sqrt(TR runs/ # evals)
 
 -------
 For algorithm setup, use LHS to produce an abundance of spread out points on 

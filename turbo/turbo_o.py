@@ -96,6 +96,8 @@ class TurboO(Turbo1):
         self.succtol = 3
         self.failtol = max(5, self.dim)
         self.lhs_points = None
+        self.TR_array = [TRTracker() for _ in range(self.n_trust_regions)]
+        self.evalCtr = 0
 
         # Very basic input checks
         assert n_trust_regions > 1 and isinstance(max_evals, int)
@@ -155,19 +157,22 @@ class TurboO(Turbo1):
     def optimize(self):
         """Run the full optimization process."""
 
-        """Made a list of lhs sample points for the whole duration of the program"""
+        """Make an array of lhs sample points for the whole duration of the program (used like a list)"""
         self.lhs_points = latin_hypercube(2*self.n_init*self.n_trust_regions, self.dim)       
         self.lhs_points = from_unit_cube(self.lhs_points, self.lb, self.ub)
 
         """Put them into the array here"""
-        for i in range(self.n_trust_regions):
-            X_init= None #filler line so X_init shows up
-            #X_init = somehow pop/sample self.n_init points from the self.lhs_points
+        for TR in range(self.TR_array):
+            X_init = self.lhs_points[:self.n_init]
+            self.lhs_points = self.lhs_points[self.n_init:]
             fX_init = np.array([self.f(x)] for x in X_init)
 
             # Update budget and set as initial data for this TR
             self.X = np.vstack((self.X, X_init))
             self.fX = np.vstack((self.fX, fX_init))
+            TR.minList = [fX_init.min()]
+            TR.runNum += 1
+            self.evalCtr += 1
             self._idx = np.vstack((self._idx, i * np.ones((self.n_init, 1), dtype=int)))
             self.n_evals += self.n_init
 
@@ -181,8 +186,11 @@ class TurboO(Turbo1):
 
             """"Use UCB and newly-added trackers to select the TR's for 
             generating and selecting candidates"""
-            #for i in range(self.n_trust_regions):
-                #figure this out
+            for i in range(self.n_trust_regions):
+                #make a hashmap for ucb and index, make an array of uct values, sort list, and 
+                # then use hashmap to then access the best TR's
+                pass
+                
 
             # Generate candidates from each TR
             X_cand = np.zeros((self.n_trust_regions, self.n_cand, self.dim))
