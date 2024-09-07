@@ -5,16 +5,10 @@ Use Turbo_M but:
 New TR's go into unsampled space
 Use UCB to pick which TR to train and GP-sample
 
--------
-Their multi-armed bandit:
-
-refer to other txt file
-
 ----------------
 Need to do:
 
-Make the program use the new TR class integrations
-Finish UCB part
+Something is wrong with the UCB formula / TR selection
 
 --------------
 UCB formula:

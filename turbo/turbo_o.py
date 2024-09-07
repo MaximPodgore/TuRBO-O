@@ -23,13 +23,10 @@ from .utils import from_unit_cube, latin_hypercube, to_unit_cube
 
 """Make a class for TR's. It should have a run counter, min counter(used for 
 both min and history)"""
-class TRTracker():
-    def __init(
-            runNum,
-            minList
-    ):
-        runNum = 0
-        minList = None
+class TRTracker:
+    def __init__(self, runNum=0, minList=[float('inf')]):
+        self.runNum = runNum
+        self.minList = minList
 
 class TurboO(Turbo1):
     """The TuRBO-O algorithm. Generates the initial LHS sample points in the 
@@ -67,6 +64,7 @@ class TurboO(Turbo1):
         n_init,
         max_evals,
         n_trust_regions,
+        tr_evaluation_percentage,
         batch_size=1,
         verbose=True,
         use_ard=True,
@@ -77,6 +75,8 @@ class TurboO(Turbo1):
         dtype="float64",
     ):
         self.n_trust_regions = n_trust_regions
+        '''percentage of the tr's that get evaluated per cycle (ranked according to UCB)'''
+        self.tr_evaluation_percentage=tr_evaluation_percentage
         super().__init__(
             f=f,
             lb=lb,
@@ -92,12 +92,12 @@ class TurboO(Turbo1):
             device=device,
             dtype=dtype,
         )
-        """Add the array here, and initialize its length to n_trust_regions"""
+        """Added an arrau of TR's to keep track of them and their run number and min values"""
         self.succtol = 3
         self.failtol = max(5, self.dim)
         self.lhs_points = None
         self.TR_array = [TRTracker() for _ in range(self.n_trust_regions)]
-        self.evalCtr = 0
+        self.TR_EvalCtr = 0
 
         # Very basic input checks
         assert n_trust_regions > 1 and isinstance(max_evals, int)
@@ -136,14 +136,15 @@ class TurboO(Turbo1):
 
     def _select_candidates(self, X_cand, y_cand):
         """Select candidates from samples from all selected trust regions this cycle"""
-        assert X_cand.shape == (self.n_trust_regions, self.n_cand, self.dim)
-        assert y_cand.shape == (self.n_trust_regions, self.n_cand, self.batch_size)
+        num_trust_regions = int(self.tr_evaluation_percentage * self.n_trust_regions)
+        assert X_cand.shape == (num_trust_regions, self.n_cand, self.dim)
+        assert y_cand.shape == (num_trust_regions, self.n_cand, self.batch_size)
         assert X_cand.min() >= 0.0 and X_cand.max() <= 1.0 and np.all(np.isfinite(y_cand))
 
         X_next = np.zeros((self.batch_size, self.dim))
         idx_next = np.zeros((self.batch_size, 1), dtype=int)
         for k in range(self.batch_size):
-            i, j = np.unravel_index(np.argmin(y_cand[:, :, k]), (self.n_trust_regions, self.n_cand))
+            i, j = np.unravel_index(np.argmin(y_cand[:, :, k]), (num_trust_regions, self.n_cand))
             assert y_cand[:, :, k].min() == y_cand[i, j, k]
             X_next[k, :] = deepcopy(X_cand[i, j, :])
             idx_next[k, 0] = i
@@ -162,23 +163,25 @@ class TurboO(Turbo1):
         self.lhs_points = from_unit_cube(self.lhs_points, self.lb, self.ub)
 
         """Put them into the array here"""
-        for TR in range(self.TR_array):
+        for i in range(self.n_trust_regions):
+            TR = self.TR_array[i]
             X_init = self.lhs_points[:self.n_init]
             self.lhs_points = self.lhs_points[self.n_init:]
-            fX_init = np.array([self.f(x)] for x in X_init)
+            fX_init = np.array([[self.f(x)] for x in X_init])
 
             # Update budget and set as initial data for this TR
             self.X = np.vstack((self.X, X_init))
             self.fX = np.vstack((self.fX, fX_init))
             TR.minList = [fX_init.min()]
             TR.runNum += 1
-            self.evalCtr += 1
+            self.TR_EvalCtr += 1
             self._idx = np.vstack((self._idx, i * np.ones((self.n_init, 1), dtype=int)))
             self.n_evals += self.n_init
 
             if self.verbose:
                 fbest = fX_init.min()
-                print(f"TR-{i} starting from: {fbest:.4}")
+                fbest = float(fbest)
+                print(f"TR-{i} starting from: {fbest:.4f}")
                 sys.stdout.flush()
 
         # Thompson sample to get next suggestions
@@ -186,19 +189,33 @@ class TurboO(Turbo1):
 
             """"Use UCB and newly-added trackers to select the TR's for 
             generating and selecting candidates"""
+            ucb_values = []
+            ucb_hashmap = {}
             for i in range(self.n_trust_regions):
                 #make a hashmap for ucb and index, make an array of uct values, sort list, and 
                 # then use hashmap to then access the best TR's
-                pass
-                
+                """Add exploration weight later"""
+                ucb_value = self.TR_array[i].minList[-1] - np.sqrt(self.TR_array[i].runNum / self.TR_EvalCtr)
+                ucb_values.append(ucb_value)
+                ucb_hashmap[ucb_value] = i
 
+            #making an array to hold the best TR's, size based on the percentage variable and TR#
+            ucb_values.sort(reverse=True)
+            n_tr_to_eval = int(self.tr_evaluation_percentage * self.n_trust_regions)
+            tr_to_eval = np.zeros(n_tr_to_eval, dtype=int)
+
+            # Select the TRs with the highest UCB values
+            for i in range(n_tr_to_eval):
+                tr_index = ucb_values.index(ucb_values[i])
+                tr_to_eval[i] = tr_index
+               
             # Generate candidates from each TR
-            X_cand = np.zeros((self.n_trust_regions, self.n_cand, self.dim))
-            y_cand = np.inf * np.ones((self.n_trust_regions, self.n_cand, self.batch_size))
+            X_cand = np.zeros((n_tr_to_eval, self.n_cand, self.dim))
+            y_cand = np.inf * np.ones((n_tr_to_eval, self.n_cand, self.batch_size))
 
             '''This loop has runtime cost. Trains gp for all TR's '''
-            for i in range(self.n_trust_regions):
-                idx = np.where(self._idx == i)[0]  # Extract all "active" indices
+            for tr_index in tr_to_eval:
+                idx = np.where(self._idx == tr_index)[0]  # Extract all "active" indices
 
                 # Get the points, values the active values
                 X = deepcopy(self.X[idx, :])
@@ -208,11 +225,11 @@ class TurboO(Turbo1):
                 fX = deepcopy(self.fX[idx, 0].ravel())
 
                 # Don't retrain the model if the training data hasn't changed
-                n_training_steps = 0 if self.hypers[i] else self.n_training_steps
+                n_training_steps = 0 if self.hypers[tr_index] else self.n_training_steps
 
                 # Create new candidates
-                X_cand[i, :, :], y_cand[i, :, :], self.hypers[i] = self._create_candidates(
-                    X, fX, length=self.length[i], n_training_steps=n_training_steps, hypers=self.hypers[i]
+                X_cand[tr_index, :, :], y_cand[tr_index, :, :], self.hypers[tr_index] = self._create_candidates(
+                    X, fX, length=self.length[tr_index], n_training_steps=n_training_steps, hypers=self.hypers[tr_index]
                 )
 
             # Select the next candidates
@@ -225,18 +242,20 @@ class TurboO(Turbo1):
             # Evaluate batch
             fX_next = np.array([[self.f(x)] for x in X_next])
 
+            """ Only update the TR's that were selected for evaluation"""
             # Update trust regions
-            for i in range(self.n_trust_regions):
-                idx_i = np.where(idx_next == i)[0]
+            for tr_index in tr_to_eval:
+                idx_i = np.where(idx_next == tr_index)[0]
                 if len(idx_i) > 0:
-                    self.hypers[i] = {}  # Remove model hypers
+                    self.hypers[tr_index] = {}  # Remove model hypers
                     fX_i = fX_next[idx_i]
-
+                    self.TR_array[tr_index].minList.append(fX_i.min())
+                    self.TR_array[tr_index].runNum += 1
                     if self.verbose and fX_i.min() < self.fX.min() - 1e-3 * math.fabs(self.fX.min()):
                         n_evals, fbest = self.n_evals, fX_i.min()
-                        print(f"{n_evals}) New best @ TR-{i}: {fbest:.4}")
+                        print(f"{n_evals}) New best @ TR-{tr_index}: {fbest:.4}")
                         sys.stdout.flush()
-                    self._adjust_length(fX_i, i)
+                    self._adjust_length(fX_i, tr_index)
 
             # Update budget and append data
             self.n_evals += self.batch_size
@@ -260,3 +279,24 @@ class TurboO(Turbo1):
                     self.failcount[i] = 0
                     self._idx[idx_i, 0] = -1  # Remove points from trust region
                     self.hypers[i] = {}  # Remove model hypers
+
+                    #make new TR object and add it to the array
+                    self.TR_array[i] = TRTracker()
+
+                    # Add new points to the trust region
+                    X_init = self.lhs_points[:self.n_init]
+                    self.lhs_points = self.lhs_points[self.n_init:]
+                    fX_init = np.array([[self.f(x)] for x in X_init])
+                    
+                    # Print progress
+                    if self.verbose:
+                        n_evals, fbest = self.n_evals, fX_init.min()
+                        print(f"{n_evals}) TR-{i} is restarting from: : {fbest:.4}")
+                        sys.stdout.flush()
+
+                    # Update budget and set as initial data for this TR
+                    self.X = np.vstack((self.X, X_init))
+                    self.fX = np.vstack((self.fX, fX_init))
+                    self._idx = np.vstack((self._idx, i * np.ones((self.n_init, 1), dtype=int)))
+                    self.n_evals += self.n_init
+                    self.TR_array[i].minList = [fX_init.min()]
