@@ -6,17 +6,14 @@ New TR's go into unsampled space
 Use UCB to pick which TR to train and GP-sample
 
 ----------------
-Need to do:
+Current work:
 
-Something is wrong with the UCB formula / TR selection
-
+Formula works. Best TR's are selected. They aren't updating though
+Something is wrong with the idx's
 --------------
 UCB formula:
 
-fX_i.min() stores the min for each TR
-currently there is no time element to succ/fail, only net
-Use succ/failcout to do improvement calculations
-Prioritize TR length in calculations, scale by log2
+Can later add a metric for track record
 
 v(TR_i) = -y_{i}^* + expl_weight * sqrt(TR runs/ # evals)
 

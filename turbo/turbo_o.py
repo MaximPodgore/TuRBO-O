@@ -195,26 +195,34 @@ class TurboO(Turbo1):
                 #make a hashmap for ucb and index, make an array of uct values, sort list, and 
                 # then use hashmap to then access the best TR's
                 """Add exploration weight later"""
-                ucb_value = self.TR_array[i].minList[-1] - np.sqrt(self.TR_array[i].runNum / self.TR_EvalCtr)
+                ucb_value = self.TR_array[i].minList[-1] + np.sqrt(self.TR_array[i].runNum / self.TR_EvalCtr)
                 ucb_values.append(ucb_value)
                 ucb_hashmap[ucb_value] = i
 
+            print("UCB Values")
+            print(ucb_values)
             #making an array to hold the best TR's, size based on the percentage variable and TR#
-            ucb_values.sort(reverse=True)
+            ucb_values.sort()
             n_tr_to_eval = int(self.tr_evaluation_percentage * self.n_trust_regions)
             tr_to_eval = np.zeros(n_tr_to_eval, dtype=int)
 
             # Select the TRs with the highest UCB values
             for i in range(n_tr_to_eval):
-                tr_index = ucb_values.index(ucb_values[i])
+                tr_index = ucb_hashmap[ucb_values[i]]
                 tr_to_eval[i] = tr_index
-               
+            
+            #print("TR's to evaluate")
+            #print(tr_to_eval)
+            
             # Generate candidates from each TR
             X_cand = np.zeros((n_tr_to_eval, self.n_cand, self.dim))
             y_cand = np.inf * np.ones((n_tr_to_eval, self.n_cand, self.batch_size))
 
             '''This loop has runtime cost. Trains gp for all TR's '''
-            for tr_index in tr_to_eval:
+            for i in range(n_tr_to_eval):
+                tr_index = tr_to_eval[i]
+                #print("TR Index")
+                #print(tr_index)
                 idx = np.where(self._idx == tr_index)[0]  # Extract all "active" indices
 
                 # Get the points, values the active values
@@ -228,7 +236,7 @@ class TurboO(Turbo1):
                 n_training_steps = 0 if self.hypers[tr_index] else self.n_training_steps
 
                 # Create new candidates
-                X_cand[tr_index, :, :], y_cand[tr_index, :, :], self.hypers[tr_index] = self._create_candidates(
+                X_cand[i, :, :], y_cand[i, :, :], self.hypers[tr_index] = self._create_candidates(
                     X, fX, length=self.length[tr_index], n_training_steps=n_training_steps, hypers=self.hypers[tr_index]
                 )
 
@@ -251,6 +259,7 @@ class TurboO(Turbo1):
                     fX_i = fX_next[idx_i]
                     self.TR_array[tr_index].minList.append(fX_i.min())
                     self.TR_array[tr_index].runNum += 1
+                    print(f"Min value for TR-{tr_index}: {fX_i.min()}")
                     if self.verbose and fX_i.min() < self.fX.min() - 1e-3 * math.fabs(self.fX.min()):
                         n_evals, fbest = self.n_evals, fX_i.min()
                         print(f"{n_evals}) New best @ TR-{tr_index}: {fbest:.4}")
