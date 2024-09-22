@@ -1,24 +1,16 @@
-Turbo_M:
-Trains and gp-samples each TR every cycle.
-
-Use Turbo_M but:
+Turbo O
 New TR's go into unsampled space
 Use UCB to pick which TR to train and GP-sample
 
-----------------
-Current work:
-
 Formula works. Best TR's are selected. They aren't updating though
 Something is wrong with the idx's
---------------
-UCB formula:
-
-Can later add a metric for track record
-
-v(TR_i) = -y_{i}^* + expl_weight * sqrt(TR runs/ # evals)
 
 -------
 For algorithm setup, use LHS to produce an abundance of spread out points on 
 independent hyper-planes and then pull from those for each TR creation. This 
 list of points can be seen as a  stack of regions because they wont be reused,
  and LHS makes sure they're independent
+
+
+ Try turbo flip behaviour: grow/shrinking in opposite behaviour of turbo
+ Slower due to more sampling in new spaces, and worse results
