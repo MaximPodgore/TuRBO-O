@@ -1,11 +1,9 @@
-from torch.optim import SGD, Adam
-from torch.optim.lr_scheduler import MultiStepLR
+
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-import os
-import torchvision.datasets as dset
-import torchvision.transforms as transforms
+
+
 import gpytorch
 import math
 import tqdm

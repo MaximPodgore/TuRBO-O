@@ -11,16 +11,24 @@
 
 import math
 import sys
+import os
 from copy import deepcopy
 
+from torch.optim import SGD, Adam
+from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim import Adam
+from torch.utils.data import TensorDataset, DataLoader
 import gpytorch
 import numpy as np
 import torch
+import tqdm
+
 
 from .gp import train_gp
 from .turbo_1 import Turbo1
 from .utils import from_unit_cube, latin_hypercube, to_unit_cube
-from .svdkl import VariationalLayer, DKLModel 
+from .svdkl import DKLModel, VariationalLayer 
+
 
 class TurboDKL(Turbo1):
     """The TuRBO-m algorithm.
@@ -139,6 +147,8 @@ class TurboDKL(Turbo1):
             y_cand[i, j, :] = np.inf
 
         return X_next, idx_next
+    
+    
 
     def optimize(self):
         """Run the full optimization process."""
@@ -160,11 +170,89 @@ class TurboDKL(Turbo1):
                 sys.stdout.flush()
 
         """Initialize the DKL model"""
-        #still don't understand grid_bounds
-        model = DKLModel(VariationalLayer, self.dim, grid_bounds=(-10., 10.))
-        #not sure whether to keep using softmax
-        likelihood = gpytorch.likelihoods.SoftmaxLikelihood(num_features=model.num_dim, num_classes=num_classes)
+         # Convert numpy arrays to PyTorch tensors
+        X_tensor = torch.from_numpy(X).float()
+        fX_tensor = torch.from_numpy(fX).float()
+        # Create data loader
+        # Split the dataset into training and testing sets
+        dataset_size = len(X_tensor)
+        indices = list(range(dataset_size))
+        split = dataset_size // 2
+        train_indices, test_indices = indices[:split], indices[split:]
+        # Create data loaders
+        train_dataset = TensorDataset(X_tensor[train_indices], fX_tensor[train_indices])
+        test_dataset = TensorDataset(X_tensor[test_indices], fX_tensor[test_indices])
 
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+         # have to switch from grid variational layer
+        model = DKLModel(VariationalLayer, self.dim, grid_bounds=(-10., 10.))
+        likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        n_epochs = 1
+        lr = 0.1
+        optimizer = SGD([
+            {'params': model.feature_extractor.parameters(), 'weight_decay': 1e-4},
+            {'params': model.gp_layer.hyperparameters(), 'lr': lr * 0.01},
+            {'params': model.gp_layer.variational_parameters()},
+            {'params': likelihood.parameters()},
+        ], lr=lr, momentum=0.9, nesterov=True, weight_decay=0)
+        #have to figure out where this is used
+        scheduler = MultiStepLR(optimizer, milestones=[0.5 * n_epochs, 0.75 * n_epochs], gamma=0.1)
+        mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp_layer, num_data=len(train_loader.dataset))
+        
+        '''Define train'''
+        def train(train_loader, model, likelihood, optimizer, mll, epoch):
+            model.train()
+            likelihood.train()
+
+            minibatch_iter = tqdm.notebook.tqdm(train_loader, desc=f"(Epoch {epoch}) Minibatch")
+            with gpytorch.settings.num_likelihood_samples(8):
+                for data, target in minibatch_iter:
+                    if torch.cuda.is_available():
+                        data, target = data.cuda(), target.cuda()
+                    optimizer.zero_grad()
+                    output = model(data)
+                    loss = -mll(output, target)
+                    loss.backward()
+                    optimizer.step()
+                    minibatch_iter.set_postfix(loss=loss.item())
+
+        '''Define test'''
+        def test_regression():
+            model.eval()
+            likelihood.eval()
+
+            mse = 0
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                for data, target in test_loader:
+                    if torch.cuda.is_available():
+                        data, target = data.cuda(), target.cuda()
+                    # Get predictive distribution
+                    output = likelihood(model(data))
+                    # Get mean prediction
+                    pred_mean = output.mean
+                    # Calculate MSE for this batch
+                    mse += ((pred_mean - target) ** 2).mean().item()
+            
+            # Calculate average MSE across all batches
+            mse /= len(test_loader)
+            print(f'Test set: Average MSE: {mse:.4f}')
+
+            return mse
+        # Train the model
+        for epoch in range(n_epochs):
+            with gpytorch.settings.use_toeplitz(False):
+                train(train_loader, model, likelihood, optimizer, mll, epoch)
+                #test
+            scheduler.step()
+            state_dict = model.state_dict()
+            likelihood_state_dict = likelihood.state_dict()
+            torch.save({'model': state_dict, 'likelihood': likelihood_state_dict}, 'dkl_turbo_checkpoint.dat')
+
+
+        if torch.cuda.is_available():
+            model = model.cuda()
+            likelihood = likelihood.cuda()
         # Thompson sample to get next suggestions
         while self.n_evals < self.max_evals:
 
