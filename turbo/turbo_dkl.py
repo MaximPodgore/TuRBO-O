@@ -21,13 +21,13 @@ from torch.utils.data import TensorDataset, DataLoader
 import gpytorch
 import numpy as np
 import torch
-import tqdm
+from tqdm import tqdm
 
 
 from .gp import train_gp
 from .turbo_1 import Turbo1
 from .utils import from_unit_cube, latin_hypercube, to_unit_cube
-from .svdkl import DKLModel, VariationalLayer 
+from .svdkl import DKLModel, VariationalNet
 
 
 class TurboDKL(Turbo1):
@@ -171,8 +171,8 @@ class TurboDKL(Turbo1):
 
         """Initialize the DKL model"""
          # Convert numpy arrays to PyTorch tensors
-        X_tensor = torch.from_numpy(X).float()
-        fX_tensor = torch.from_numpy(fX).float()
+        X_tensor = torch.from_numpy(self.X).float()
+        fX_tensor = torch.from_numpy(self.fX).float()
         # Create data loader
         # Split the dataset into training and testing sets
         dataset_size = len(X_tensor)
@@ -186,7 +186,7 @@ class TurboDKL(Turbo1):
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
          # have to switch from grid variational layer
-        model = DKLModel(VariationalLayer, self.dim, grid_bounds=(-10., 10.))
+        model = DKLModel(VariationalNet, self.dim, grid_bounds=(-10., 10.))
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         n_epochs = 1
         lr = 0.1
@@ -204,18 +204,30 @@ class TurboDKL(Turbo1):
         def train(train_loader, model, likelihood, optimizer, mll, epoch):
             model.train()
             likelihood.train()
-
-            minibatch_iter = tqdm.notebook.tqdm(train_loader, desc=f"(Epoch {epoch}) Minibatch")
+            
+            minibatch_iter = tqdm(train_loader, desc=f"(Epoch {epoch}) Minibatch")
             with gpytorch.settings.num_likelihood_samples(8):
                 for data, target in minibatch_iter:
                     if torch.cuda.is_available():
                         data, target = data.cuda(), target.cuda()
+                    
+                    print("Data shape:", data.shape)
+                    print("Target shape:", target.shape)
+                    
                     optimizer.zero_grad()
                     output = model(data)
-                    loss = -mll(output, target)
-                    loss.backward()
-                    optimizer.step()
-                    minibatch_iter.set_postfix(loss=loss.item())
+                    
+                    print("Model output shape:", output.shape)
+                    
+                    try:
+                        loss = -mll(output, target)
+                        loss.backward()
+                        optimizer.step()
+                        minibatch_iter.set_postfix(loss=loss.item())
+                    except RuntimeError as e:
+                        print("Error in loss calculation:")
+                        print(e)
+                        break
 
         '''Define test'''
         def test_regression():

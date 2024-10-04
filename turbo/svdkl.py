@@ -75,7 +75,7 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
 class DKLModel(gpytorch.Module):
     def __init__(self, feature_extractor, num_dim, grid_bounds=(-10., 10.)):
         super(DKLModel, self).__init__()
-        self.feature_extractor = feature_extractor(num_dim,2,1)
+        self.feature_extractor = feature_extractor(num_dim,[num_dim, num_dim],num_dim)
         self.gp_layer = GaussianProcessLayer(num_dim=num_dim, grid_bounds=grid_bounds)
         self.grid_bounds = grid_bounds
         self.num_dim = num_dim
