@@ -216,9 +216,9 @@ class TurboDKL(Turbo1):
                     
                     optimizer.zero_grad()
                     output = model(data)
-                    
-                    print("Model output shape:", output.shape)
-                    
+                    print("Output", output)
+                    print("output shape:", output.shape)
+                    print("target shape:", target.shape)
                     try:
                         loss = -mll(output, target)
                         loss.backward()

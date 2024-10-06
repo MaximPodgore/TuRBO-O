@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -6,7 +5,6 @@ import torch.nn as nn
 
 import gpytorch
 import math
-import tqdm
 
 
 class VariationalLayer(nn.Module):
@@ -71,25 +69,36 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
         mean = self.mean_module(x)
         covar = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean, covar)
+
+# Linear combination layer
+class LinearCombination(torch.nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.weights = torch.nn.Parameter(torch.ones(input_dim))
     
+    def forward(self, x):
+        return (x * self.weights).sum(dim=-1)
+
 class DKLModel(gpytorch.Module):
     def __init__(self, feature_extractor, num_dim, grid_bounds=(-10., 10.)):
         super(DKLModel, self).__init__()
         self.feature_extractor = feature_extractor(num_dim,[num_dim, num_dim],num_dim)
         self.gp_layer = GaussianProcessLayer(num_dim=num_dim, grid_bounds=grid_bounds)
+        self.linear_combination = LinearCombination(num_dim)
         self.grid_bounds = grid_bounds
         self.num_dim = num_dim
 
         # This module will scale the NN features so that they're nice values
         self.scale_to_bounds = gpytorch.utils.grid.ScaleToBounds(self.grid_bounds[0], self.grid_bounds[1])
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
 
     def forward(self, x):
+        print("Entering feature layer")
         features = self.feature_extractor(x)
         features = self.scale_to_bounds(features)
         # This next line makes it so that we learn a GP for each feature
         features = features.transpose(-1, -2).unsqueeze(-1)
+        print("Entering GP layer")
         res = self.gp_layer(features)
-        return res
-    
-    
-
+        combined = self.linear_combination(res.mean)
+        return self.likelihood(combined)
