@@ -183,14 +183,8 @@ class TurboDKL(Turbo1):
 
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-         # have to switch from grid variational layer
         hidden_dims = 2
-        # Get the number of dimensions in X_tensor
-        num_dimensions = X_tensor.shape[1]
-        # Create grid_bounds list
-        grid_bounds = [get_dimension_bounds(X_tensor[:, i]) for i in range(num_dimensions)]
-        print("Grid bounds:", grid_bounds)
-        model = DKLModel(VariationalNet, self.dim, hidden_dims, grid_bounds)
+        model = DKLModel(VariationalNet, self.dim, hidden_dims)
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         n_epochs = 1
         lr = 0.1
@@ -225,6 +219,7 @@ class TurboDKL(Turbo1):
                     #print("target shape:", target.shape)
                     try:
                         loss = -mll(output, target)
+                        loss = loss.mean()
                         loss.backward()
                         optimizer.step()
                         minibatch_iter.set_postfix(loss=loss.item())

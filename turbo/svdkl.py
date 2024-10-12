@@ -39,17 +39,17 @@ class VariationalNet(nn.Module):
         return self.layers[-1](x)
 
 class GaussianProcessLayer(gpytorch.models.ApproximateGP):
-    def __init__(self, grid_bounds=(-10., 10.), grid_size=64):
-        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
-            num_inducing_points=grid_size
+    def __init__(self, num_inducing=64, inducing_points=None):
+        # Use the simplest form of GP model, exact inference
+        inducing_points = torch.randn(num_inducing, 1) if inducing_points is None else inducing_points
+        
+        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(num_inducing_points=num_inducing)
+        variational_strategy = gpytorch.variational.VariationalStrategy(
+            self, inducing_points, variational_distribution, learn_inducing_locations=True
         )
+        super(GaussianProcessLayer, self).__init__(variational_strategy)
 
-        variational_strategy = gpytorch.variational.GridInterpolationVariationalStrategy(
-            self, grid_size=grid_size, grid_bounds=[grid_bounds],
-            variational_distribution=variational_distribution,
-        )
-        super().__init__(variational_strategy)
-
+        self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.RBFKernel(
                 lengthscale_prior=gpytorch.priors.SmoothedBoxPrior(
@@ -57,8 +57,6 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
                 )
             )
         )
-        self.mean_module = gpytorch.means.ConstantMean()
-        self.grid_bounds = grid_bounds
 
     def forward(self, x):
         mean = self.mean_module(x)
@@ -66,17 +64,14 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
         return gpytorch.distributions.MultivariateNormal(mean, covar)
 
 class DKLModel(gpytorch.Module):
-    def __init__(self, feature_extractor, input_dim, hidden_dims, grid_bounds=(-10., 10.)):
+    def __init__(self, feature_extractor, input_dim, hidden_dims, num_inducing=64, inducing_points=None):
         super(DKLModel, self).__init__()
         self.feature_extractor = feature_extractor(input_dim, hidden_dims, 1)
-        self.gp_layer = GaussianProcessLayer(grid_bounds=grid_bounds)
-        self.grid_bounds = grid_bounds
-
-        # This module will scale the NN features so that they're nice values
-        self.scale_to_bounds = gpytorch.utils.grid.ScaleToBounds(self.grid_bounds[0], self.grid_bounds[1])
+        self.gp_layer = GaussianProcessLayer(num_inducing=num_inducing, inducing_points=inducing_points)
+    
 
     def forward(self, x):
         features = self.feature_extractor(x)
-        features = features.transpose(-1, -2).unsqueeze(-1)
+        features = features.unsqueeze(-1)
         res = self.gp_layer(features)
         return res
