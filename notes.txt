@@ -1,3 +1,9 @@
+Turbo DKL:
+Currently need to figure out grid variational strategy so it works well
+
+
+
+----------------
 Turbo O
 New TR's go into unsampled space
 Use UCB to pick which TR to train and GP-sample

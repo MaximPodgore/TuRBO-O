@@ -1,11 +1,8 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-
-
 import gpytorch
 import math
-
 
 class VariationalLayer(nn.Module):
     def __init__(self, in_features, out_features):
@@ -29,7 +26,10 @@ class VariationalNet(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
         super().__init__()
         self.layers = nn.ModuleList()
-        dims = [input_dim] + hidden_dims + [output_dim]
+        dims = [input_dim] 
+        for i in range(hidden_dims):
+            dims.append(input_dim)
+        dims.append(output_dim)
         for i in range(len(dims) - 1):
             self.layers.append(VariationalLayer(dims[i], dims[i+1]))
 
@@ -37,21 +37,16 @@ class VariationalNet(nn.Module):
         for layer in self.layers[:-1]:
             x = F.relu(layer(x))
         return self.layers[-1](x)
-    
+
 class GaussianProcessLayer(gpytorch.models.ApproximateGP):
-    def __init__(self, num_dim, grid_bounds=(-10., 10.), grid_size=64):
+    def __init__(self, grid_bounds=(-10., 10.), grid_size=64):
         variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
-            num_inducing_points=grid_size, batch_shape=torch.Size([num_dim])
+            num_inducing_points=grid_size
         )
 
-        # Our base variational strategy is a GridInterpolationVariationalStrategy,
-        # which places variational inducing points on a Grid
-        # We wrap it with a IndependentMultitaskVariationalStrategy so that our output is a vector-valued GP
-        variational_strategy = gpytorch.variational.IndependentMultitaskVariationalStrategy(
-            gpytorch.variational.GridInterpolationVariationalStrategy(
-                self, grid_size=grid_size, grid_bounds=[grid_bounds],
-                variational_distribution=variational_distribution,
-            ), num_tasks=num_dim,
+        variational_strategy = gpytorch.variational.GridInterpolationVariationalStrategy(
+            self, grid_size=grid_size, grid_bounds=[grid_bounds],
+            variational_distribution=variational_distribution,
         )
         super().__init__(variational_strategy)
 
@@ -70,35 +65,18 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
         covar = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean, covar)
 
-# Linear combination layer
-class LinearCombination(torch.nn.Module):
-    def __init__(self, input_dim):
-        super().__init__()
-        self.weights = torch.nn.Parameter(torch.ones(input_dim))
-    
-    def forward(self, x):
-        return (x * self.weights).sum(dim=-1)
-
 class DKLModel(gpytorch.Module):
-    def __init__(self, feature_extractor, num_dim, grid_bounds=(-10., 10.)):
+    def __init__(self, feature_extractor, input_dim, hidden_dims, grid_bounds=(-10., 10.)):
         super(DKLModel, self).__init__()
-        self.feature_extractor = feature_extractor(num_dim,[num_dim, num_dim],num_dim)
-        self.gp_layer = GaussianProcessLayer(num_dim=num_dim, grid_bounds=grid_bounds)
-        self.linear_combination = LinearCombination(num_dim)
+        self.feature_extractor = feature_extractor(input_dim, hidden_dims, 1)
+        self.gp_layer = GaussianProcessLayer(grid_bounds=grid_bounds)
         self.grid_bounds = grid_bounds
-        self.num_dim = num_dim
 
         # This module will scale the NN features so that they're nice values
         self.scale_to_bounds = gpytorch.utils.grid.ScaleToBounds(self.grid_bounds[0], self.grid_bounds[1])
-        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
 
     def forward(self, x):
-        print("Entering feature layer")
         features = self.feature_extractor(x)
-        features = self.scale_to_bounds(features)
-        # This next line makes it so that we learn a GP for each feature
         features = features.transpose(-1, -2).unsqueeze(-1)
-        print("Entering GP layer")
         res = self.gp_layer(features)
-        combined = self.linear_combination(res.mean)
-        return self.likelihood(combined)
+        return res

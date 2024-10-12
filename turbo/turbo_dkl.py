@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 from .gp import train_gp
 from .turbo_1 import Turbo1
-from .utils import from_unit_cube, latin_hypercube, to_unit_cube
+from .utils import from_unit_cube, latin_hypercube, to_unit_cube, get_dimension_bounds
 from .svdkl import DKLModel, VariationalNet
 
 
@@ -147,8 +147,6 @@ class TurboDKL(Turbo1):
             y_cand[i, j, :] = np.inf
 
         return X_next, idx_next
-    
-    
 
     def optimize(self):
         """Run the full optimization process."""
@@ -186,7 +184,13 @@ class TurboDKL(Turbo1):
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
          # have to switch from grid variational layer
-        model = DKLModel(VariationalNet, self.dim, grid_bounds=(-10., 10.))
+        hidden_dims = 2
+        # Get the number of dimensions in X_tensor
+        num_dimensions = X_tensor.shape[1]
+        # Create grid_bounds list
+        grid_bounds = [get_dimension_bounds(X_tensor[:, i]) for i in range(num_dimensions)]
+        print("Grid bounds:", grid_bounds)
+        model = DKLModel(VariationalNet, self.dim, hidden_dims, grid_bounds)
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         n_epochs = 1
         lr = 0.1
@@ -199,7 +203,7 @@ class TurboDKL(Turbo1):
         #have to figure out where this is used
         scheduler = MultiStepLR(optimizer, milestones=[0.5 * n_epochs, 0.75 * n_epochs], gamma=0.1)
         mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp_layer, num_data=len(train_loader.dataset))
-        
+
         '''Define train'''
         def train(train_loader, model, likelihood, optimizer, mll, epoch):
             model.train()
@@ -217,8 +221,8 @@ class TurboDKL(Turbo1):
                     optimizer.zero_grad()
                     output = model(data)
                     print("Output", output)
-                    print("output shape:", output.shape)
-                    print("target shape:", target.shape)
+                    #print("output shape:", output.shape)
+                    #print("target shape:", target.shape)
                     try:
                         loss = -mll(output, target)
                         loss.backward()
