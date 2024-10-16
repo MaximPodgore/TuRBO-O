@@ -16,18 +16,16 @@ from copy import deepcopy
 
 from torch.optim import SGD, Adam
 from torch.optim.lr_scheduler import MultiStepLR
-from torch.optim import Adam
+from torch.quasirandom import SobolEngine
 from torch.utils.data import TensorDataset, DataLoader
 import gpytorch
 import numpy as np
 import torch
 from tqdm import tqdm
 
-
-from .gp import train_gp
 from .turbo_1 import Turbo1
-from .utils import from_unit_cube, latin_hypercube, to_unit_cube, get_dimension_bounds
-from .svdkl import DKLModel, VariationalNet
+from .utils import from_unit_cube, latin_hypercube, to_unit_cube
+from .svdkl import DKLModel, VariationalNet, train, test_regression
 
 
 class TurboDKL(Turbo1):
@@ -128,6 +126,118 @@ class TurboDKL(Turbo1):
             self.length[i] /= 2.0
             self.failcount[i] = 0
 
+    def _create_candidates(self, X, fX, length, n_training_steps, hypers, dkl_model):
+        """Generate candidates assuming X has been scaled to [0,1]^d."""
+        # Pick the center as the point with the smallest function values
+        # NOTE: This may not be robust to noise, in which case the posterior mean of the GP can be used instead
+        assert X.min() >= 0.0 and X.max() <= 1.0
+
+        # Standardize function values.
+        mu, sigma = np.median(fX), fX.std()
+        sigma = 1.0 if sigma < 1e-6 else sigma
+        fX = (deepcopy(fX) - mu) / sigma
+
+        # Figure out what device we are running on
+        if len(X) < self.min_cuda:
+            device, dtype = torch.device("cpu"), torch.float64
+        else:
+            device, dtype = self.device, self.dtype
+
+        #Changing dkl parameters to match dtype
+        dkl_model = dkl_model.to(dtype)
+
+        # We use CG + Lanczos for training if we have enough data
+        with gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
+            X_torch = torch.tensor(X).to(device=device, dtype=dtype)
+            y_torch = torch.tensor(fX).to(device=device, dtype=dtype)
+
+            # Extract features using the DKL feature extractor
+            print(f"Input dtype: {X_torch.dtype}")
+            print(f"Input shape: {X_torch.shape}")
+            features = dkl_model.feature_extractor(X_torch).detach()
+            print(f"Features dtype: {features.dtype}")
+            print(f"Features shape: {features.shape}")
+            print(f"Features stats: mean={features.mean()}, min={features.min()}, max={features.max()}, NaNs={torch.isnan(features).sum()}")
+            # Create a new GP model using the DKL kernel
+            class ExactGPModel(gpytorch.models.ExactGP):
+                def __init__(self, train_x, train_y, likelihood, kernel):
+                    super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+                    self.mean_module = gpytorch.means.ConstantMean()
+                    self.covar_module = kernel
+
+                def forward(self, x):
+                    mean_x = self.mean_module(x)
+                    covar_x = self.covar_module(x)
+                    return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+        likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        gp = ExactGPModel(features, y_torch, likelihood, dkl_model.get_kernel())
+
+        if hypers:
+            gp.load_state_dict(hypers)
+
+        # Train the GP
+        gp.train()
+        likelihood.train()
+        optimizer = torch.optim.Adam(gp.parameters(), lr=0.1)
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp)
+
+        for _ in range(n_training_steps):
+            optimizer.zero_grad()
+            output = gp(features)
+            loss = -mll(output, y_torch)
+            loss.backward()
+            optimizer.step()
+
+        # Save state dict
+        hypers = gp.state_dict()
+        
+        # Create the trust region boundaries
+        x_center = X[fX.argmin().item(), :][None, :]
+        weights = gp.covar_module.base_kernel.lengthscale.cpu().detach().numpy().ravel()
+        weights = weights / weights.mean()  # This will make the next line more stable
+        weights = weights / np.prod(np.power(weights, 1.0 / len(weights)))  # We now have weights.prod() = 1
+        lb = np.clip(x_center - weights * length / 2.0, 0.0, 1.0)
+        ub = np.clip(x_center + weights * length / 2.0, 0.0, 1.0)
+
+        # Draw a Sobolev sequence in [lb, ub]
+        seed = np.random.randint(int(1e6))
+        sobol = SobolEngine(self.dim, scramble=True, seed=seed)
+        pert = sobol.draw(self.n_cand).to(dtype=dtype, device=device).cpu().detach().numpy()
+        pert = lb + (ub - lb) * pert
+
+        # Create a perturbation mask
+        prob_perturb = min(20.0 / self.dim, 1.0)
+        mask = np.random.rand(self.n_cand, self.dim) <= prob_perturb
+        ind = np.where(np.sum(mask, axis=1) == 0)[0]
+        mask[ind, np.random.randint(0, self.dim - 1, size=len(ind))] = 1
+
+        # Create candidate points
+        X_cand = x_center.copy() * np.ones((self.n_cand, self.dim))
+        X_cand[mask] = pert[mask]
+
+        # Figure out what device we are running on
+        if len(X_cand) < self.min_cuda:
+            device, dtype = torch.device("cpu"), torch.float64
+        else:
+            device, dtype = self.device, self.dtype
+
+        # We may have to move the GP to a new device
+        gp = gp.to(dtype=dtype, device=device)
+
+        # We use Lanczos for sampling if we have enough data
+        with torch.no_grad(), gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
+            X_cand_torch = torch.tensor(X_cand).to(device=device, dtype=dtype)
+            X_cand_features = dkl_model.feature_extractor(X_cand_torch).detach()
+            y_cand = likelihood(gp(X_cand_features)).sample(torch.Size([self.batch_size])).t().cpu().detach().numpy()
+        # Remove the torch variables
+        del X_torch, y_torch, X_cand_torch, gp
+
+        # De-standardize the sampled values
+        y_cand = mu + sigma * y_cand
+
+        return X_cand, y_cand, hypers
+
     def _select_candidates(self, X_cand, y_cand):
         """Select candidates from samples from all trust regions."""
         assert X_cand.shape == (self.n_trust_regions, self.n_cand, self.dim)
@@ -198,63 +308,11 @@ class TurboDKL(Turbo1):
         scheduler = MultiStepLR(optimizer, milestones=[0.5 * n_epochs, 0.75 * n_epochs], gamma=0.1)
         mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp_layer, num_data=len(train_loader.dataset))
 
-        '''Define train'''
-        def train(train_loader, model, likelihood, optimizer, mll, epoch):
-            model.train()
-            likelihood.train()
-            
-            minibatch_iter = tqdm(train_loader, desc=f"(Epoch {epoch}) Minibatch")
-            with gpytorch.settings.num_likelihood_samples(8):
-                for data, target in minibatch_iter:
-                    if torch.cuda.is_available():
-                        data, target = data.cuda(), target.cuda()
-                    
-                    print("Data shape:", data.shape)
-                    print("Target shape:", target.shape)
-                    
-                    optimizer.zero_grad()
-                    output = model(data)
-                    print("Output", output)
-                    #print("output shape:", output.shape)
-                    #print("target shape:", target.shape)
-                    try:
-                        loss = -mll(output, target)
-                        loss = loss.mean()
-                        loss.backward()
-                        optimizer.step()
-                        minibatch_iter.set_postfix(loss=loss.item())
-                    except RuntimeError as e:
-                        print("Error in loss calculation:")
-                        print(e)
-                        break
-
-        '''Define test'''
-        def test_regression():
-            model.eval()
-            likelihood.eval()
-
-            mse = 0
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                for data, target in test_loader:
-                    if torch.cuda.is_available():
-                        data, target = data.cuda(), target.cuda()
-                    # Get predictive distribution
-                    output = likelihood(model(data))
-                    # Get mean prediction
-                    pred_mean = output.mean
-                    # Calculate MSE for this batch
-                    mse += ((pred_mean - target) ** 2).mean().item()
-            
-            # Calculate average MSE across all batches
-            mse /= len(test_loader)
-            print(f'Test set: Average MSE: {mse:.4f}')
-
-            return mse
         # Train the model
         for epoch in range(n_epochs):
             with gpytorch.settings.use_toeplitz(False):
                 train(train_loader, model, likelihood, optimizer, mll, epoch)
-                #test
+                test_regression(test_loader, model, likelihood)
             scheduler.step()
             state_dict = model.state_dict()
             likelihood_state_dict = likelihood.state_dict()
@@ -287,7 +345,7 @@ class TurboDKL(Turbo1):
 
                 # Create new candidates
                 X_cand[i, :, :], y_cand[i, :, :], self.hypers[i] = self._create_candidates(
-                    X, fX, length=self.length[i], n_training_steps=n_training_steps, hypers=self.hypers[i]
+                    X, fX, length=self.length[i], n_training_steps=n_training_steps, hypers=self.hypers[i], dkl_model = model
                 )
 
             # Select the next candidates

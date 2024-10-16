@@ -1,5 +1,6 @@
 Turbo DKL:
-Currently need to figure out grid variational strategy so it works well
+Figure out how I want to integrate the DKL kernel into the other gp's 
+Give it more passes upon new data collection
 
 
 

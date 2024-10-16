@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import gpytorch
 import math
+from tqdm import tqdm
 
 class VariationalLayer(nn.Module):
     def __init__(self, in_features, out_features):
@@ -69,9 +70,56 @@ class DKLModel(gpytorch.Module):
         self.feature_extractor = feature_extractor(input_dim, hidden_dims, 1)
         self.gp_layer = GaussianProcessLayer(num_inducing=num_inducing, inducing_points=inducing_points)
     
-
     def forward(self, x):
         features = self.feature_extractor(x)
         features = features.unsqueeze(-1)
         res = self.gp_layer(features)
         return res
+    
+    def get_kernel(self):
+        return self.gp_layer.covar_module
+    
+def train(train_loader, model, likelihood, optimizer, mll, epoch):
+    model.train()
+    likelihood.train()
+    
+    minibatch_iter = tqdm(train_loader, desc=f"(Epoch {epoch}) Minibatch")
+    with gpytorch.settings.num_likelihood_samples(8):
+        for data, target in minibatch_iter:
+            if torch.cuda.is_available():
+                data, target = data.cuda(), target.cuda()
+            
+            print("Data shape:", data.shape)
+            print("Target shape:", target.shape)
+            
+            optimizer.zero_grad()
+            output = model(data)
+            print("Output", output)
+            #print("output shape:", output.shape)
+            #print("target shape:", target.shape)
+            loss = -mll(output, target)
+            loss = loss.mean()
+            loss.backward()
+            optimizer.step()
+            minibatch_iter.set_postfix(loss=loss.item())
+
+def test_regression(test_loader, model, likelihood):
+    model.eval()
+    likelihood.eval()
+
+    mse = 0
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
+        for data, target in test_loader:
+            if torch.cuda.is_available():
+                data, target = data.cuda(), target.cuda()
+            # Get predictive distribution
+            output = likelihood(model(data))
+            # Get mean prediction
+            pred_mean = output.mean
+            # Calculate MSE for this batch
+            mse += ((pred_mean - target) ** 2).mean().item()
+    
+    # Calculate average MSE across all batches
+    mse /= len(test_loader)
+    print(f'Test set: Average MSE: {mse:.4f}')
+    return mse

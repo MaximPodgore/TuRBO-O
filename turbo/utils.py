@@ -12,11 +12,6 @@
 import numpy as np
 import torch
 
-def get_dimension_bounds(tensor):
-        min_val = torch.min(tensor).item()
-        max_val = torch.max(tensor).item()
-        return (float(min_val), float(max_val))
-
 def to_unit_cube(x, lb, ub):
     """Project to [0, 1]^d from hypercube with bounds lb and ub"""
     assert np.all(lb < ub) and lb.ndim == 1 and ub.ndim == 1 and x.ndim == 2
