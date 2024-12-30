@@ -144,53 +144,51 @@ class TurboDKL(Turbo1):
             device, dtype = self.device, self.dtype
 
         #Changing dkl parameters to match dtype
-        dkl_model = dkl_model.to(dtype)
+        dkl_model = dkl_model.to(torch.float32)
+
+        class ExactGPModel(gpytorch.models.ExactGP):
+            def __init__(self, train_x, train_y, likelihood, kernel):
+                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+                self.mean_module = gpytorch.means.ConstantMean()
+                self.covar_module = kernel
+
+            def forward(self, x):
+                mean_x = self.mean_module(x)
+                covar_x = self.covar_module(x)
+                return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
         # We use CG + Lanczos for training if we have enough data
         with gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
-            X_torch = torch.tensor(X).to(device=device, dtype=dtype)
-            y_torch = torch.tensor(fX).to(device=device, dtype=dtype)
+            X_torch = torch.tensor(X).to(torch.float32)
+            y_torch = torch.tensor(fX).to(torch.float32)
 
             # Extract features using the DKL feature extractor
-            print(f"Input dtype: {X_torch.dtype}")
-            print(f"Input shape: {X_torch.shape}")
             features = dkl_model.feature_extractor(X_torch).detach()
-            print(f"Features dtype: {features.dtype}")
-            print(f"Features shape: {features.shape}")
-            print(f"Features stats: mean={features.mean()}, min={features.min()}, max={features.max()}, NaNs={torch.isnan(features).sum()}")
-            # Create a new GP model using the DKL kernel
-            class ExactGPModel(gpytorch.models.ExactGP):
-                def __init__(self, train_x, train_y, likelihood, kernel):
-                    super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-                    self.mean_module = gpytorch.means.ConstantMean()
-                    self.covar_module = kernel
+            likelihood = gpytorch.likelihoods.GaussianLikelihood()
+            gp = ExactGPModel(features, y_torch, likelihood, dkl_model.get_kernel())
+            if hypers:
+                gp.load_state_dict(hypers)
+            gp.train()
+            likelihood.train()
+            optimizer = torch.optim.Adam(gp.parameters(), lr=0.1)
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp)
+            for _ in range(n_training_steps):
+                optimizer.zero_grad()
+                output = gp(features)
+                # Check for NaN values in the output
+                nan_count = torch.isnan(output.mean).sum().item()
+                if nan_count > 0:
+                    print(f"Number of NaN values in the output: {nan_count}")
+                
+                loss = -mll(output, y_torch)
+                loss.backward()
+                optimizer.step()
 
-                def forward(self, x):
-                    mean_x = self.mean_module(x)
-                    covar_x = self.covar_module(x)
-                    return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-
-        likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        gp = ExactGPModel(features, y_torch, likelihood, dkl_model.get_kernel())
-
-        if hypers:
-            gp.load_state_dict(hypers)
-
-        # Train the GP
-        gp.train()
-        likelihood.train()
-        optimizer = torch.optim.Adam(gp.parameters(), lr=0.1)
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp)
-
-        for _ in range(n_training_steps):
-            optimizer.zero_grad()
-            output = gp(features)
-            loss = -mll(output, y_torch)
-            loss.backward()
-            optimizer.step()
-
-        # Save state dict
-        hypers = gp.state_dict()
+            # Save state dict
+            hypers = gp.state_dict()
+        
+        gp.eval()
+        likelihood.eval()
         
         # Create the trust region boundaries
         x_center = X[fX.argmin().item(), :][None, :]
@@ -278,25 +276,24 @@ class TurboDKL(Turbo1):
                 sys.stdout.flush()
 
         """Initialize the DKL model"""
-         # Convert numpy arrays to PyTorch tensors
+        # Create 2 dataloaders with from 1 split dataset
         X_tensor = torch.from_numpy(self.X).float()
         fX_tensor = torch.from_numpy(self.fX).float()
-        # Create data loader
-        # Split the dataset into training and testing sets
         dataset_size = len(X_tensor)
         indices = list(range(dataset_size))
         split = dataset_size // 2
         train_indices, test_indices = indices[:split], indices[split:]
-        # Create data loaders
         train_dataset = TensorDataset(X_tensor[train_indices], fX_tensor[train_indices])
         test_dataset = TensorDataset(X_tensor[test_indices], fX_tensor[test_indices])
 
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
         hidden_dims = 2
-        model = DKLModel(VariationalNet, self.dim, hidden_dims)
+        num_features = 3
+        model = DKLModel(VariationalNet, self.dim, hidden_dims, output_dim=num_features)
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        n_epochs = 1
+        n_epochs = 20
+        total_epochs = 50
         lr = 0.1
         optimizer = SGD([
             {'params': model.feature_extractor.parameters(), 'weight_decay': 1e-4},
@@ -304,8 +301,8 @@ class TurboDKL(Turbo1):
             {'params': model.gp_layer.variational_parameters()},
             {'params': likelihood.parameters()},
         ], lr=lr, momentum=0.9, nesterov=True, weight_decay=0)
-        #have to figure out where this is used
-        scheduler = MultiStepLR(optimizer, milestones=[0.5 * n_epochs, 0.75 * n_epochs], gamma=0.1)
+        #will still have to tune because I don't want it to be too unstable
+        scheduler = MultiStepLR(optimizer, milestones=[0.5 * total_epochs, 0.75 * total_epochs], gamma=0.1)
         mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp_layer, num_data=len(train_loader.dataset))
 
         # Train the model
@@ -323,7 +320,23 @@ class TurboDKL(Turbo1):
             model = model.cuda()
             likelihood = likelihood.cuda()
         # Thompson sample to get next suggestions
+        update_gloval_freq = 19
+        while_ctr = 0
         while self.n_evals < self.max_evals:
+            '''update global kernel (can tune how often this is done)'''
+            if (while_ctr % update_gloval_freq == 0):
+                print("Updating global kernel")
+                X_tensor = torch.from_numpy(self.X).float()
+                fX_tensor = torch.from_numpy(self.fX).float()
+                train_dataset = TensorDataset(X_tensor, fX_tensor)
+                train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+                for epoch in range(10):
+                    with gpytorch.settings.use_toeplitz(False):
+                        train(train_loader, model, likelihood, optimizer, mll, epoch)
+                    scheduler.step()
+                    state_dict = model.state_dict()
+                    likelihood_state_dict = likelihood.state_dict()
+
 
             # Generate candidates from each TR
             X_cand = np.zeros((self.n_trust_regions, self.n_cand, self.dim))
@@ -340,10 +353,11 @@ class TurboDKL(Turbo1):
                 # Get the values from the standardized data
                 fX = deepcopy(self.fX[idx, 0].ravel())
 
-                # Don't retrain the model if the training data hasn't changed
-                n_training_steps = 0 if self.hypers[i] else self.n_training_steps
+                # Don't retrain the model if the training data hasn't changed and the global kernel hasn't been updated
+                n_training_steps = 0 if (self.hypers[i] or while_ctr % update_gloval_freq == 0) else self.n_training_steps
 
                 # Create new candidates
+                #print("Creating candidates for TR:", i)
                 X_cand[i, :, :], y_cand[i, :, :], self.hypers[i] = self._create_candidates(
                     X, fX, length=self.length[i], n_training_steps=n_training_steps, hypers=self.hypers[i], dkl_model = model
                 )
@@ -410,3 +424,4 @@ class TurboDKL(Turbo1):
                     self.fX = np.vstack((self.fX, fX_init))
                     self._idx = np.vstack((self._idx, i * np.ones((self.n_init, 1), dtype=int)))
                     self.n_evals += self.n_init
+            while_ctr += 1
