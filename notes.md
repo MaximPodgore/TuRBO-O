@@ -13,9 +13,13 @@ Apparently this means that the matrix in that gp is not positive semi-definite (
 
 Both bugs seem to be a result of the weirdness of my global-local kernel setup
 
+### For the end-to-end kernel model:
+
+The second bug also occurs but the first does not, implying that the starting gp is more stable, but the gp's that use the dkl kernel are pretty unstable
+
 ### Previous Blockers: ###
 dtype error in dkl. 
-Solution: hardcode it to float32 for now
+Solution: Make sure all layers of dkl use torch.float64. Might have to rethink later, but that seems standard and I don't know of any 32bit pc systems
 
 Current feature_extraction layer's output is 1 dim, which is bad. But, it can't
 be fixed atm because training requires the output of the gp layer be 1 dim mean 
