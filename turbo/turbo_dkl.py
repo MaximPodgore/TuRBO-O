@@ -144,7 +144,7 @@ class TurboDKL(Turbo1):
             device, dtype = self.device, self.dtype
 
         #Changing dkl parameters to match dtype
-        dkl_model = dkl_model.to(torch.float32)
+        dkl_model = dkl_model.to(dtype)
 
         class ExactGPModel(gpytorch.models.ExactGP):
             def __init__(self, train_x, train_y, likelihood, kernel):
@@ -159,8 +159,8 @@ class TurboDKL(Turbo1):
 
         # We use CG + Lanczos for training if we have enough data
         with gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
-            X_torch = torch.tensor(X).to(torch.float32)
-            y_torch = torch.tensor(fX).to(torch.float32)
+            X_torch = torch.tensor(X).to(dtype)
+            y_torch = torch.tensor(fX).to(dtype)
 
             # Extract features using the DKL feature extractor
             features = dkl_model.feature_extractor(X_torch).detach()
@@ -213,12 +213,6 @@ class TurboDKL(Turbo1):
         # Create candidate points
         X_cand = x_center.copy() * np.ones((self.n_cand, self.dim))
         X_cand[mask] = pert[mask]
-
-        # Figure out what device we are running on
-        if len(X_cand) < self.min_cuda:
-            device, dtype = torch.device("cpu"), torch.float64
-        else:
-            device, dtype = self.device, self.dtype
 
         # We may have to move the GP to a new device
         gp = gp.to(dtype=dtype, device=device)
@@ -276,9 +270,16 @@ class TurboDKL(Turbo1):
                 sys.stdout.flush()
 
         """Initialize the DKL model"""
+        # Figure out what device we are running on
+        if len(self.X) < self.min_cuda:
+            device, dtype = torch.device("cpu"), torch.float64
+        else:
+            device, dtype = self.device, self.dtype
+        print("device:", device)
+        print("dtype:", dtype)
         # Create 2 dataloaders with from 1 split dataset
-        X_tensor = torch.from_numpy(self.X).float()
-        fX_tensor = torch.from_numpy(self.fX).float()
+        X_tensor = torch.from_numpy(self.X).to(dtype)
+        fX_tensor = torch.from_numpy(self.fX).to(dtype)
         dataset_size = len(X_tensor)
         indices = list(range(dataset_size))
         split = dataset_size // 2
@@ -308,8 +309,8 @@ class TurboDKL(Turbo1):
         # Train the model
         for epoch in range(n_epochs):
             with gpytorch.settings.use_toeplitz(False):
-                train(train_loader, model, likelihood, optimizer, mll, epoch)
-                test_regression(test_loader, model, likelihood)
+                train(train_loader, model, likelihood, optimizer, mll, dtype)
+                test_regression(test_loader, model, likelihood, dtype)
             scheduler.step()
             state_dict = model.state_dict()
             likelihood_state_dict = likelihood.state_dict()
@@ -332,7 +333,7 @@ class TurboDKL(Turbo1):
                 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
                 for epoch in range(10):
                     with gpytorch.settings.use_toeplitz(False):
-                        train(train_loader, model, likelihood, optimizer, mll, epoch)
+                        train(train_loader, model, likelihood, optimizer, mll, dtype)
                     scheduler.step()
                     state_dict = model.state_dict()
                     likelihood_state_dict = likelihood.state_dict()

@@ -164,6 +164,7 @@ class TurboDKLFullKernel(Turbo1):
             likelihood.train()
             optimizer = torch.optim.Adam(gp.parameters(), lr=0.1)
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp)
+            print("Training local gp")
             for _ in range(n_training_steps):
                 optimizer.zero_grad()
                 output = gp(X_torch)
@@ -205,12 +206,6 @@ class TurboDKLFullKernel(Turbo1):
         # Create candidate points
         X_cand = x_center.copy() * np.ones((self.n_cand, self.dim))
         X_cand[mask] = pert[mask]
-
-        # Figure out what device we are running on
-        if len(X_cand) < self.min_cuda:
-            device, dtype = torch.device("cpu"), torch.float64
-        else:
-            device, dtype = self.device, self.dtype
 
         # We may have to move the GP to a new device
         gp = gp.to(dtype=dtype, device=device)

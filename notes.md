@@ -3,7 +3,9 @@
 Current best of 0.126 on dataset compared to 0.023 of TurboM.
 
 ## TODO:
-Fix two bugs
+
+Fix two bugs related to instability of the gaussian processes.
+
 - First happens in initial training/testing phase. ![alt text](image-1.png)
 Which is a result of numerical instability in potentially both hyperparameters and outputs. Possible solutions: increased jitter, and data normalization
 
@@ -11,11 +13,8 @@ Which is a result of numerical instability in potentially both hyperparameters a
 ![alt text](image.png)
 Apparently this means that the matrix in that gp is not positive semi-definite (PSD). Possible solutions: increased jitter, data normalization, and less aggressive learning rates.
 
-Both bugs seem to be a result of the weirdness of my global-local kernel setup
 
-### For the end-to-end kernel model:
 
-The second bug also occurs but the first does not, implying that the starting gp is more stable, but the gp's that use the dkl kernel are pretty unstable
 
 ### Previous Blockers: ###
 dtype error in dkl. 
