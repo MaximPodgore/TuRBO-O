@@ -111,13 +111,25 @@ class CombinedGPModel(gpytorch.models.ExactGP):
     def forward(self, x):
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
+        covar_x = covar_x.matmul(covar_x.transpose(-1, -2))
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+class ExactGPModel(gpytorch.models.ExactGP):
+            def __init__(self, train_x, train_y, likelihood, kernel):
+                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+                self.mean_module = gpytorch.means.ConstantMean()
+                self.covar_module = kernel
+
+            def forward(self, x):
+                mean_x = self.mean_module(x)
+                covar_x = self.covar_module(x)
+                return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 def train(train_loader, model, likelihood, optimizer, mll, dtype):
     model.train()
     likelihood.train()
     
-    minibatch_iter = tqdm(train_loader)
+    minibatch_iter = tqdm(train_loader, disable=True)
     with gpytorch.settings.num_likelihood_samples(8):
         for data, target in minibatch_iter:
             if torch.cuda.is_available():
@@ -135,7 +147,6 @@ def train(train_loader, model, likelihood, optimizer, mll, dtype):
             loss = loss.mean()
             loss.backward()
             optimizer.step()
-            minibatch_iter.set_postfix(loss=loss.item())
 
 def test_regression(test_loader, model, likelihood, dtype):
     model.eval()

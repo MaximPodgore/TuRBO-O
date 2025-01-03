@@ -164,7 +164,7 @@ class TurboDKLFullKernel(Turbo1):
             likelihood.train()
             optimizer = torch.optim.Adam(gp.parameters(), lr=0.1)
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp)
-            print("Training local gp")
+            #print("Training local gp")
             for _ in range(n_training_steps):
                 optimizer.zero_grad()
                 output = gp(X_torch)
@@ -267,7 +267,7 @@ class TurboDKLFullKernel(Turbo1):
             device, dtype = torch.device("cpu"), torch.float64
         else:
             device, dtype = self.device, self.dtype
-        print("dtype:", dtype)
+        #print("dtype:", dtype)
         # Create 2 dataloaders with from 1 split dataset
         X_tensor = torch.from_numpy(self.X).to(dtype)
         fX_tensor = torch.from_numpy(self.fX).to(dtype)
@@ -288,8 +288,8 @@ class TurboDKLFullKernel(Turbo1):
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         #Making sure that all the parameters are the same dtype
         likelihood = likelihood.to(dtype)
-        n_epochs = 20
-        total_epochs = 50
+        n_epochs = 12
+        total_epochs = 150
         lr = 0.1
         optimizer = SGD([
             {'params': model.feature_extractor.parameters(), 'weight_decay': 1e-4},
@@ -315,17 +315,17 @@ class TurboDKLFullKernel(Turbo1):
             model = model.cuda()
             likelihood = likelihood.cuda()
         # Thompson sample to get next suggestions
-        update_gloval_freq = 19
+        update_gloval_freq = 3
         while_ctr = 0
         while self.n_evals < self.max_evals:
             '''update global kernel (can tune how often this is done)'''
             if (while_ctr % update_gloval_freq == 0):
-                print("Updating global kernel")
+                #print("Updating global kernel")
                 X_tensor = torch.from_numpy(self.X).float()
                 fX_tensor = torch.from_numpy(self.fX).float()
                 train_dataset = TensorDataset(X_tensor, fX_tensor)
                 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-                for epoch in range(10):
+                for epoch in range(8):
                     with gpytorch.settings.use_toeplitz(False):
                         train(train_loader, model, likelihood, optimizer, mll, dtype)
                     scheduler.step()

@@ -1,32 +1,31 @@
 # Turbo DKL: #
 
-Current best of 0.126 on dataset compared to 0.023 of TurboM.
+Current best of 0.0181 by Full DKL on dataset compared to 0.023 of TurboM.  
+**TurboM average:** around 0.6 and 3.5 minutes  
+**TurboDKL_full average:** around 0.6 and 6 minutes
+
+Achieved by lowering to 12 initial epochs for the global/root model, then 8 epochs every 3 loops 
+Full Dkl seems to be performing signicantly better than the NN DKL, however good runs are highly dependent on a good start. Also, seems to maker smaller more consistent and frequent steps than TurboM (especially if global model trains too much)
+
 
 ## TODO:
-
-Fix two bugs related to instability of the gaussian processes.
-
-- First happens in initial training/testing phase. ![alt text](image-1.png)
-Which is a result of numerical instability in potentially both hyperparameters and outputs. Possible solutions: increased jitter, and data normalization
-
-- Second happens during the long term running when creating new candidates for a new gp. The gp creates some outputs but throws an error when calculating loss.
-![alt text](image.png)
-Apparently this means that the matrix in that gp is not positive semi-definite (PSD). Possible solutions: increased jitter, data normalization, and less aggressive learning rates.
-
+Tune and optimize
 
 
 
 ### Previous Blockers: ###
-dtype error in dkl. 
-Solution: Make sure all layers of dkl use torch.float64. Might have to rethink later, but that seems standard and I don't know of any 32bit pc systems
+Numerical instability of local TR gp's (covar not positive semi-definite)  
+**Solution:** covar = covar by transpose-covar
+
+dtype error in dkl.   
+**Solution:** Make sure all layers of dkl use torch.float64. Might have to rethink later, but that seems standard and I don't know of any 32bit pc systems
 
 Current feature_extraction layer's output is 1 dim, which is bad. But, it can't
 be fixed atm because training requires the output of the gp layer be 1 dim mean 
 because that's the dim of the target data, there then has to be 1 gp in the gp 
 layer (if using multitask independent strategy) which then means that 
-the feature_extraction layer has to output 1 dim as well. 
-
-Solution for better use of gp: multiple nn features, but still 1 gp.
+the feature_extraction layer has to output 1 dim as well.   
+**Solution** for better use of gp: multiple nn features, but still 1 gp.
 
 ----------------
 Turbo O

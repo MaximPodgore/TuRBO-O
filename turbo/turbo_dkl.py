@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from .turbo_1 import Turbo1
 from .utils import from_unit_cube, latin_hypercube, to_unit_cube
-from .svdkl import DKLModel, VariationalNet, train, test_regression
+from .svdkl import DKLModel, VariationalNet, ExactGPModel, train, test_regression
 
 
 class TurboDKL(Turbo1):
@@ -146,17 +146,6 @@ class TurboDKL(Turbo1):
         #Changing dkl parameters to match dtype
         dkl_model = dkl_model.to(dtype)
 
-        class ExactGPModel(gpytorch.models.ExactGP):
-            def __init__(self, train_x, train_y, likelihood, kernel):
-                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-                self.mean_module = gpytorch.means.ConstantMean()
-                self.covar_module = kernel
-
-            def forward(self, x):
-                mean_x = self.mean_module(x)
-                covar_x = self.covar_module(x)
-                return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-
         # We use CG + Lanczos for training if we have enough data
         with gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
             X_torch = torch.tensor(X).to(dtype)
@@ -275,8 +264,7 @@ class TurboDKL(Turbo1):
             device, dtype = torch.device("cpu"), torch.float64
         else:
             device, dtype = self.device, self.dtype
-        print("device:", device)
-        print("dtype:", dtype)
+        #print("dtype:", dtype)
         # Create 2 dataloaders with from 1 split dataset
         X_tensor = torch.from_numpy(self.X).to(dtype)
         fX_tensor = torch.from_numpy(self.fX).to(dtype)
@@ -293,8 +281,8 @@ class TurboDKL(Turbo1):
         num_features = 3
         model = DKLModel(VariationalNet, self.dim, hidden_dims, output_dim=num_features)
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        n_epochs = 20
-        total_epochs = 50
+        n_epochs = 15
+        total_epochs = 80
         lr = 0.1
         optimizer = SGD([
             {'params': model.feature_extractor.parameters(), 'weight_decay': 1e-4},
@@ -314,14 +302,13 @@ class TurboDKL(Turbo1):
             scheduler.step()
             state_dict = model.state_dict()
             likelihood_state_dict = likelihood.state_dict()
-            torch.save({'model': state_dict, 'likelihood': likelihood_state_dict}, 'dkl_turbo_checkpoint.dat')
-
+           
 
         if torch.cuda.is_available():
             model = model.cuda()
             likelihood = likelihood.cuda()
         # Thompson sample to get next suggestions
-        update_gloval_freq = 19
+        update_gloval_freq = 2
         while_ctr = 0
         while self.n_evals < self.max_evals:
             '''update global kernel (can tune how often this is done)'''
@@ -331,7 +318,7 @@ class TurboDKL(Turbo1):
                 fX_tensor = torch.from_numpy(self.fX).float()
                 train_dataset = TensorDataset(X_tensor, fX_tensor)
                 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-                for epoch in range(10):
+                for epoch in range(8):
                     with gpytorch.settings.use_toeplitz(False):
                         train(train_loader, model, likelihood, optimizer, mll, dtype)
                     scheduler.step()
