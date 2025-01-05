@@ -5,8 +5,7 @@ Current best of 0.0181 by Full DKL on dataset compared to 0.023 of TurboM.
 **TurboDKL_full average:** around 0.6 and 6 minutes
 
 Achieved by lowering to 12 initial epochs for the global/root model, then 8 epochs every 3 loops 
-Full Dkl seems to be performing signicantly better than the NN DKL, however good runs are highly dependent on a good start. Also, seems to maker smaller more consistent and frequent steps than TurboM (especially if global model trains too much)
-
+Full Dkl seems to be performing signicantly better than the NN DKL, however good runs are highly dependent on a good start. Also, seems to maker smaller more consistent and frequent steps than TurboM (especially if global model trains too much). Tweaking how frequently or long the global model updates only seems to worsen performance (both extremes for both variables)
 
 ## TODO:
 Tune and optimize

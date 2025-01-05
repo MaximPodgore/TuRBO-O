@@ -307,8 +307,7 @@ class TurboDKLFullKernel(Turbo1):
                 train(train_loader, model, likelihood, optimizer, mll, dtype)
                 test_regression(test_loader, model, likelihood, dtype)
             scheduler.step()
-            state_dict = model.state_dict()
-            likelihood_state_dict = likelihood.state_dict()
+
 
 
         if torch.cuda.is_available():
@@ -329,8 +328,6 @@ class TurboDKLFullKernel(Turbo1):
                     with gpytorch.settings.use_toeplitz(False):
                         train(train_loader, model, likelihood, optimizer, mll, dtype)
                     scheduler.step()
-                    state_dict = model.state_dict()
-                    likelihood_state_dict = likelihood.state_dict()
 
 
             # Generate candidates from each TR
