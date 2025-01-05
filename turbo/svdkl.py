@@ -101,6 +101,7 @@ class DKLKernel(gpytorch.kernels.Kernel):
 
     def get_lengthscale(self):
         return self.dkl_model.gp_layer.covar_module.base_kernel.lengthscale
+    
 '''class for the gp that uses the dkl kernel'''
 class CombinedGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood, dkl_model):
@@ -138,10 +139,15 @@ def train(train_loader, model, likelihood, optimizer, mll, dtype):
             target = target.to(dtype)
             #print("data dtype:", data.dtype)
             #print("target dtype:", target.dtype)
-            
+            print("data shape:", data.shape)    
+
             optimizer.zero_grad()
             
             output = model(data)
+            print("output", output)
+            print("output mean:", output.mean)
+            print("output variance:", output.variance)
+            print("Target:", target)
             #print("output dtype:", output.mean.dtype)
             loss = -mll(output, target.to(dtype))
             loss = loss.mean()
