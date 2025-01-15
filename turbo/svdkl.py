@@ -5,26 +5,25 @@ import gpytorch
 import math
 from tqdm import tqdm
 
+'''layer for the neural network'''
 class VariationalLayer(nn.Module):
     def __init__(self, in_features, out_features):
         super().__init__()
-        #hard coding the dtype to torch.float64 to prevent 32 vs 64 bit errors
-        #what systems use 32 bit floats?
+        #hard-coding the dtype to torch.float64 to prevent 32 vs 64 bit errors
+        #TODO: someone should remove the hardcoding and make dtype flexible
+        #that'd lead to performance increases on CUDA devices, but would also take a lot of dev time
         self.weight_mu = nn.Parameter(torch.Tensor(out_features, in_features).to(torch.float64))
         self.weight_rho = nn.Parameter(torch.Tensor(out_features, in_features).to(torch.float64))
         self.bias_mu = nn.Parameter(torch.Tensor(out_features).to(torch.float64))
         self.bias_rho = nn.Parameter(torch.Tensor(out_features).to(torch.float64))
         self.reset_parameters()
 
-    def reset_parameters(self):
-        # Initialize parameters
-        pass
-
     def forward(self, input):
         weight = self.weight_mu + torch.randn_like(self.weight_mu) * F.softplus(self.weight_rho)
         bias = self.bias_mu + torch.randn_like(self.bias_mu) * F.softplus(self.bias_rho)
         return F.linear(input, weight, bias)
 
+'''neural network class'''
 class VariationalNet(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim, dtype=torch.float64):
         super().__init__()
@@ -41,6 +40,12 @@ class VariationalNet(nn.Module):
             x = F.relu(layer(x))
         return self.layers[-1](x)
 
+''' can find information on this section here:
+https://docs.gpytorch.ai/en/latest/examples/06_PyTorch_NN_Integration_DKL/Deep_Kernel_Learning_DenseNet_CIFAR_Tutorial.html
+and here:
+https://docs.gpytorch.ai/en/latest/variational.html
+still uncertain on the variational strategy section and how the GP even blends with the NN'''
+#TODO: understand and double-check this
 class GaussianProcessLayer(gpytorch.models.ApproximateGP):
     def __init__(self, input_dim, num_inducing=64, inducing_points=None, dtype=torch.float64):
         inducing_points = torch.randn(num_inducing, input_dim, dtype=dtype) if inducing_points is None else inducing_points
@@ -61,6 +66,7 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
         )
 
     def forward(self, x):
+        #print statements are for debugging dtype errors (for when someone wants to undo the hardcoding)
         #print("x dtype:", x.dtype) 
         mean = self.mean_module(x)
         #print("mean dtype:", mean.dtype)
@@ -68,6 +74,7 @@ class GaussianProcessLayer(gpytorch.models.ApproximateGP):
         #print("covar dtype:", covar.dtype)
         return gpytorch.distributions.MultivariateNormal(mean, covar)
 
+'''class for the entire DKL model'''
 class DKLModel(gpytorch.Module):
     def __init__(self, feature_extractor, input_dim, hidden_dims, output_dim, num_inducing=64, inducing_points=None, dtype=torch.float64):
         super(DKLModel, self).__init__()
@@ -102,7 +109,7 @@ class DKLKernel(gpytorch.kernels.Kernel):
     def get_lengthscale(self):
         return self.dkl_model.gp_layer.covar_module.base_kernel.lengthscale
     
-'''class for the gp that uses the dkl kernel'''
+'''class for the gp that uses the dkl kernel in the turbo-dkl-full-kernel function (the better one)'''
 class CombinedGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood, dkl_model):
         super().__init__(train_x, train_y, likelihood)
@@ -115,7 +122,9 @@ class CombinedGPModel(gpytorch.models.ExactGP):
         covar_x = covar_x.matmul(covar_x.transpose(-1, -2))
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
-class ExactGPModel(gpytorch.models.ExactGP):
+
+'''this class is for the gp that uses dkl's gp's kernel in turbo-dkl''' 
+class ExactGPModel(gpytorch.models.ExactGP): 
             def __init__(self, train_x, train_y, likelihood, kernel):
                 super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
                 self.mean_module = gpytorch.means.ConstantMean()
@@ -126,10 +135,12 @@ class ExactGPModel(gpytorch.models.ExactGP):
                 covar_x = self.covar_module(x)
                 return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
+'''Train function for training global dkl model'''
 def train(train_loader, model, likelihood, optimizer, mll, dtype):
     model.train()
     likelihood.train()
     
+    #have the tdqm prints to console disabled so output is cleaner
     minibatch_iter = tqdm(train_loader, disable=True)
     with gpytorch.settings.num_likelihood_samples(8):
         for data, target in minibatch_iter:
@@ -154,6 +165,7 @@ def train(train_loader, model, likelihood, optimizer, mll, dtype):
             loss.backward()
             optimizer.step()
 
+'''Test function for training global dkl model'''
 def test_regression(test_loader, model, likelihood, dtype):
     model.eval()
     likelihood.eval()

@@ -156,8 +156,8 @@ class TurboDKLFullKernel(Turbo1):
             # Create the GP model
             likelihood = gpytorch.likelihoods.GaussianLikelihood()
             gp = CombinedGPModel(X_torch, y_torch, likelihood, dkl_model)
-            #can decide whether to modify this since kernel normally gets 
-            #updated each time this gets called
+            #TODO: decide whether to allow the gp to use it's hypers
+            # the kernel is constantly changing so idk if it's a good idea
             '''if hypers:
                 gp.load_state_dict(hypers)'''
             gp.train()
@@ -165,9 +165,12 @@ class TurboDKLFullKernel(Turbo1):
             optimizer = torch.optim.Adam(gp.parameters(), lr=0.1)
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp)
             #print("Training local gp")
+            #above print is useful for visualizing how often the local gp is trained
             for _ in range(n_training_steps):
                 optimizer.zero_grad()
                 output = gp(X_torch)
+
+                # this section is a check because sometimes the gp freaks out if its kernel is unstable
                 # Check for NaN values in the output
                 nan_count = torch.isnan(output.mean).sum().item()
                 if nan_count > 0:
@@ -268,6 +271,7 @@ class TurboDKLFullKernel(Turbo1):
         else:
             device, dtype = self.device, self.dtype
         #print("dtype:", dtype)
+
         # Create 2 dataloaders with from 1 split dataset
         X_tensor = torch.from_numpy(self.X).to(dtype)
         fX_tensor = torch.from_numpy(self.fX).to(dtype)
@@ -277,27 +281,31 @@ class TurboDKLFullKernel(Turbo1):
         train_indices, test_indices = indices[:split], indices[split:]
         train_dataset = TensorDataset(X_tensor[train_indices], fX_tensor[train_indices])
         test_dataset = TensorDataset(X_tensor[test_indices], fX_tensor[test_indices])
-
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
+        #TODO: move magic numbers to class variables so that users can tweak them
         #current magic numbers
         hidden_dims = 2
         num_features = 3
         model = DKLModel(VariationalNet, self.dim, hidden_dims, output_dim=num_features, dtype=dtype)
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        #Making sure that all the parameters are the same dtype
+        
+        '''More magic numbers regarding dkl gp training and frequency'''
         likelihood = likelihood.to(dtype)
-        n_epochs = 12
-        total_epochs = 150
+        n_epochs = 30
+        total_epochs = 180
+        #how often to update the global kernel
+        update_gloval_freq = 3
         lr = 0.1
+
+        # Set up the optimizer and related parts
         optimizer = SGD([
             {'params': model.feature_extractor.parameters(), 'weight_decay': 1e-4},
             {'params': model.gp_layer.hyperparameters(), 'lr': lr * 0.01},
             {'params': model.gp_layer.variational_parameters()},
             {'params': likelihood.parameters()},
         ], lr=lr, momentum=0.9, nesterov=True, weight_decay=0)
-        #will still have to tune because I don't want it to be too unstable
         scheduler = MultiStepLR(optimizer, milestones=[0.5 * total_epochs, 0.75 * total_epochs], gamma=0.1)
         mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp_layer, num_data=len(train_loader.dataset))
 
@@ -308,23 +316,25 @@ class TurboDKLFullKernel(Turbo1):
                 test_regression(test_loader, model, likelihood, dtype)
             scheduler.step()
 
-
-
         if torch.cuda.is_available():
             model = model.cuda()
             likelihood = likelihood.cuda()
+
         # Thompson sample to get next suggestions
-        update_gloval_freq = 3
         while_ctr = 0
         while self.n_evals < self.max_evals:
-            '''update global kernel (can tune how often this is done)'''
+
+            '''Update global kernel (can tune how often this is done)'''
             if (while_ctr % update_gloval_freq == 0):
                 #print("Updating global kernel")
+                #above print is useful for visualizing how often the global kernel is updated
+
+                #makes a new dataset each time since X_tensor and fX_tensor are constantly updated
                 X_tensor = torch.from_numpy(self.X).float()
                 fX_tensor = torch.from_numpy(self.fX).float()
                 train_dataset = TensorDataset(X_tensor, fX_tensor)
                 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-                for epoch in range(8):
+                for _ in range(8):
                     with gpytorch.settings.use_toeplitz(False):
                         train(train_loader, model, likelihood, optimizer, mll, dtype)
                     scheduler.step()
@@ -334,7 +344,8 @@ class TurboDKLFullKernel(Turbo1):
             X_cand = np.zeros((self.n_trust_regions, self.n_cand, self.dim))
             y_cand = np.inf * np.ones((self.n_trust_regions, self.n_cand, self.batch_size))
 
-            '''This loop has runtime cost. Trains gp for all TR's '''
+            '''Trains the local gp for each trust region IF the TR has gotten new points or if global gp has updated. 
+            Regardless of that, each TR generates candidates'''
             for i in range(self.n_trust_regions):
                 idx = np.where(self._idx == i)[0]  # Extract all "active" indices
 
@@ -346,7 +357,7 @@ class TurboDKLFullKernel(Turbo1):
                 fX = deepcopy(self.fX[idx, 0].ravel())
 
                 # Don't retrain the model if the training data hasn't changed and the global kernel hasn't been updated
-                n_training_steps = 0 if (self.hypers[i] or while_ctr % update_gloval_freq == 0) else self.n_training_steps
+                n_training_steps = 0 if (self.hypers[i] and while_ctr % update_gloval_freq != 0) else self.n_training_steps
 
                 # Create new candidates
                 #print("Creating candidates for TR:", i)
